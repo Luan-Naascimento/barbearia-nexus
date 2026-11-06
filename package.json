@@ -8,7 +8,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "update:sdk": "npx expo install expo@latest && npx expo install --fix",
-    "check": "npx expo-doctor@latest"
+    "check": "npx expo-doctor@latest",
+    "lint": "expo lint"
   },
   "dependencies": {
     "@expo-google-fonts/nunito": "^0.4.2",
@@ -36,6 +37,8 @@
   },
   "devDependencies": {
     "@types/react": "~19.3.0",
+    "eslint": "^9.0.0",
+    "eslint-config-expo": "~58.0.4",
     "typescript": "~6.0.3"
   },
   "private": true

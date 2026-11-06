@@ -1,7 +1,7 @@
 rules_version = '2';
 
 // REGRAS DE SEGURANÇA — colar em Firebase Console > Firestore Database > Regras > Publicar.
-// Quem decide o que cada pessoa pode fazer é o servidor, não o app.
+
 service cloud.firestore {
   match /databases/{database}/documents {
 
