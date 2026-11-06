@@ -1,11 +1,12 @@
+
 import React from 'react';
 import { Tabs } from 'expo-router';
 import { Aba, BarraAbas } from '../../../src/components/BarraAbas';
 
 const ABAS: Aba[] = [
-  { nome: 'index', rotulo: 'Painel', icone: 'painel' },
-  { nome: 'barbeiros', rotulo: 'Barbeiros', icone: 'equipe' },
-  { nome: 'perfil', rotulo: 'Meu perfil', icone: 'perfil' },
+  { rota: '/dono', rotulo: 'Painel', icone: 'painel' },
+  { rota: '/dono/barbeiros', rotulo: 'Barbeiros', icone: 'equipe' },
+  { rota: '/dono/perfil', rotulo: 'Meu perfil', icone: 'perfil' },
 ];
 
 export default function AbasDono() {
