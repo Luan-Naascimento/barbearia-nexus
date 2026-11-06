@@ -1,0 +1,154 @@
+rules_version = '2';
+
+// REGRAS DE SEGURANÇA — colar em Firebase Console > Firestore Database > Regras > Publicar.
+// Quem decide o que cada pessoa pode fazer é o servidor, não o app.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- Funções de apoio ----------
+    function logado() { return request.auth != null; }
+    function docUsuario(uid) { return /databases/$(database)/documents/usuarios/$(uid); }
+    function docConvite(codigo) { return /databases/$(database)/documents/convites/$(codigo); }
+    function docAgendamento(id) { return /databases/$(database)/documents/agendamentos/$(id); }
+    function papelDe(uid) { return exists(docUsuario(uid)) ? get(docUsuario(uid)).data.papel : ''; }
+    function meuPapel() { return logado() ? papelDe(request.auth.uid) : ''; }
+    function ehAdmin() { return meuPapel() == 'admin'; }
+    function ehDono() { return meuPapel() == 'dono' || ehAdmin(); }
+
+    // ---------- Usuários ----------
+    match /usuarios/{uid} {
+      function novo() { return request.resource.data; }
+      function mudou() { return request.resource.data.diff(resource.data).affectedKeys(); }
+
+      // Conta de cliente comum (cadastro pelo app)
+      function clienteNovo() {
+        return novo().papel == 'cliente'
+          && novo().keys().hasOnly(['nome', 'email', 'papel', 'lembrete', 'criadoEm'])
+          && novo().email == request.auth.token.email;
+      }
+
+      // Conta de dono: só com código de ativação válido, usado na mesma operação
+      function donoNovo() {
+        let c = novo().codigo;
+        return novo().papel == 'dono'
+          && novo().keys().hasOnly(['nome', 'email', 'papel', 'codigo', 'lembrete', 'atende', 'criadoEm'])
+          && novo().email == request.auth.token.email
+          && get(docConvite(c)).data.tipo == 'dono'
+          && get(docConvite(c)).data.usado == false
+          && get(docConvite(c)).data.email == request.auth.token.email
+          && getAfter(docConvite(c)).data.usado == true
+          && getAfter(docConvite(c)).data.usadoPor == request.auth.uid;
+      }
+
+      function editarProprio() {
+        return request.auth.uid == uid && mudou().hasOnly(['lembrete', 'nome', 'atende']);
+      }
+
+      // Cliente vira barbeiro lendo o QR code do dono (uso único)
+      function virarBarbeiro() {
+        let c = request.resource.data.convite;
+        return request.auth.uid == uid
+          && resource.data.papel == 'cliente'
+          && request.resource.data.papel == 'barbeiro'
+          && mudou().hasOnly(['papel', 'convite'])
+          && get(docConvite(c)).data.tipo == 'barbeiro'
+          && get(docConvite(c)).data.usado == false
+          && getAfter(docConvite(c)).data.usado == true
+          && getAfter(docConvite(c)).data.usadoPor == request.auth.uid;
+      }
+
+      // Dono descadastra barbeiro (ele volta a ser cliente)
+      function descadastrar() {
+        return ehDono()
+          && resource.data.papel == 'barbeiro'
+          && request.resource.data.papel == 'cliente'
+          && mudou().hasOnly(['papel']);
+      }
+
+      allow read: if logado() && (request.auth.uid == uid || ehDono());
+      allow create: if logado() && request.auth.uid == uid && (clienteNovo() || donoNovo());
+      allow update: if logado() && (editarProprio() || virarBarbeiro() || descadastrar());
+      allow delete: if false;
+    }
+
+    // ---------- Convites (código do dono e QR code da equipe) ----------
+    match /convites/{codigo} {
+      // Precisa ler o código antes de ter conta (tela de ativação do dono)
+      allow get: if true;
+      allow list: if ehDono();
+      allow create: if logado()
+        && request.resource.data.usado == false
+        && request.resource.data.keys().hasOnly(['tipo', 'nome', 'email', 'usado', 'criadoEm'])
+        && ((request.resource.data.tipo == 'dono' && ehAdmin())
+            || (request.resource.data.tipo == 'barbeiro' && ehDono()));
+      // Marcar como usado (uma única vez)
+      allow update: if logado()
+        && resource.data.usado == false
+        && request.resource.data.usado == true
+        && request.resource.data.usadoPor == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usado', 'usadoPor'])
+        && (resource.data.tipo != 'dono' || resource.data.email == request.auth.token.email);
+      allow delete: if false;
+    }
+
+    // ---------- Lista pública de quem atende clientes ----------
+    match /barbeiros/{uid} {
+      allow read: if logado();
+      allow create, update: if logado()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['nome', 'funcao'])
+        && getAfter(docUsuario(uid)).data.papel in ['barbeiro', 'dono', 'admin'];
+      allow delete: if ehDono();
+    }
+
+    // ---------- Horários de funcionamento ----------
+    match /config/{doc} {
+      allow read: if logado();
+      allow write: if ehDono();
+    }
+
+    // ---------- Agendamentos ----------
+    match /agendamentos/{id} {
+      allow read: if logado()
+        && (resource.data.clienteId == request.auth.uid
+            || resource.data.barbeiroId == request.auth.uid
+            || ehDono());
+
+      // O código do documento é barbeiro_dia_hora: assim dois clientes nunca pegam o mesmo horário
+      allow create: if logado()
+        && request.resource.data.clienteId == request.auth.uid
+        && request.resource.data.status == 'pendente'
+        && request.resource.data.keys().hasOnly(['clienteId', 'clienteNome', 'barbeiroId', 'barbeiroNome', 'dia', 'hora', 'inicioMs', 'status', 'criadoEm'])
+        && id == request.resource.data.barbeiroId + '_' + request.resource.data.dia + '_' + request.resource.data.hora.replace(':', '')
+        && exists(/databases/$(database)/documents/barbeiros/$(request.resource.data.barbeiroId))
+        && existsAfter(/databases/$(database)/documents/ocupados/$(id));
+
+      // Barbeiro (ou dono) confirma
+      allow update: if logado()
+        && (resource.data.barbeiroId == request.auth.uid || ehDono())
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+        && request.resource.data.status == 'confirmado';
+
+      // Cliente, barbeiro ou dono cancelam
+      allow delete: if logado()
+        && (resource.data.clienteId == request.auth.uid
+            || resource.data.barbeiroId == request.auth.uid
+            || ehDono());
+    }
+
+    // ---------- Horários ocupados (sem dados pessoais, qualquer um pode ver) ----------
+    match /ocupados/{id} {
+      allow read: if logado();
+      allow create: if logado()
+        && request.resource.data.keys().hasOnly(['barbeiroId', 'dia', 'hora'])
+        && existsAfter(docAgendamento(id))
+        && getAfter(docAgendamento(id)).data.clienteId == request.auth.uid
+        && getAfter(docAgendamento(id)).data.barbeiroId == request.resource.data.barbeiroId
+        && getAfter(docAgendamento(id)).data.dia == request.resource.data.dia
+        && getAfter(docAgendamento(id)).data.hora == request.resource.data.hora;
+      allow update: if false;
+      // Só some junto com o agendamento
+      allow delete: if logado() && exists(docAgendamento(id)) && !existsAfter(docAgendamento(id));
+    }
+  }
+}
